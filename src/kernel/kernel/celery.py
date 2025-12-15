@@ -11,8 +11,8 @@ app.autodiscover_tasks()
 
 
 app.conf.beat_schedule = {
-    "update-rossvyaz-every-hour": {
+    "update-rossvyaz-daily": {
         "task": "app.tasks.update_rossvyaz_task",
-        "schedule": crontab(minute="*/1"),
+        "schedule": crontab(hour=3, minute=0),
     },
 }
