@@ -1,7 +1,5 @@
-from django.http import JsonResponse, HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
-from drf_spectacular.utils import extend_schema, OpenApiParameter
-from rest_framework.decorators import api_view
 
 
 from .forms import PhoneLookupForm
