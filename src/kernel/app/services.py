@@ -1,7 +1,8 @@
+import re
 import csv
 import logging
 from io import StringIO
-import pandas
+import pandas as pd
 import phonenumbers
 import requests
 
@@ -30,8 +31,10 @@ def get_user_agent() -> str:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         )
+
+
 def write_string_io(
-        df: pandas.DataFrame | None = None,
+        df: pd.DataFrame | None = None,
         columns=None,
         values=None,
 ) -> StringIO:
@@ -74,88 +77,112 @@ def fetch_all_csvs() -> list[str]:
     return texts
 
 
-def prepare_df(csv_texts: list[str]) -> pandas.DataFrame:
-    frames = []
-    for text in csv_texts:
-        df_part = pandas.read_csv(
-            StringIO(text),
-            delimiter=";",
-            header=0,
-            engine="python",
-            on_bad_lines="skip",
-        )
-        frames.append(df_part)
+def prepare_df(csv_file) -> pd.DataFrame:
+    df = pd.read_csv(
+        csv_file,
+        delimiter=";",
+        header=None,
+        dtype=str,
+        engine="python",
+        on_bad_lines="skip",
+    )
 
-    df = pandas.concat(frames, ignore_index=True)
+    df = df.iloc[:, :6]
+    df.columns = ["code", "begin", "end", "count", "operator", "region"]
 
-    df = df.rename(columns={
-        "АВС/ DEF": "code",
-        "От": "begin",
-        "До": "end",
-        "Оператор": "operator",
-        "Регион": "region",
-    })
+    for col in ["code", "begin", "end", "operator", "region"]:
+        df[col] = df[col].fillna("").astype(str).str.strip()
 
-    df = df[["code", "begin", "end", "operator", "region"]]
-    df["region"] = df["region"].astype(str).apply(lambda s: s.split("|")[-1].strip())
-    df["code"] = df["code"].astype(str).str.strip()
-    df["begin"] = df["begin"].astype(str).str.strip()
-    df["end"] = df["end"].astype(str).str.strip()
-
-    df["begin"] = (df["code"] + df["begin"])
-    df["end"] = (df["code"] + df["end"])
-    df = df[df["begin"].str.isdigit() & df["end"].str.isdigit()]
-    return df
-
-
-def update_df_and_model(df: pandas.DataFrame, Model, column: str) -> None:
-    existing = Model.objects.values_list("name", "id")
-    name_to_id = dict(existing)
-
-    new_names = [
-        [name] for name in df[column].unique()
-        if name not in name_to_id
-    ]
-
-    if new_names:
-        logger.info("Found %s new %s entries, importing...", len(new_names), column)
-        s_buf = write_string_io(columns=["name"], values=new_names)
-        Model.objects.bulk_create(
-            [Model(name=row[0]) for row in new_names],
-            ignore_conflicts=True,
-        )
-        name_to_id = dict(Model.objects.values_list("name", "id"))
-
-    df[column] = df[column].map(name_to_id)
-
-
-def update_info() -> None:
-    logger.info("Updating Rossvyaz data from opendata.digital.gov.ru")
-
-    csv_file = fetch_all_csvs()
-    df = prepare_df(csv_file)
-
-    update_df_and_model(df, Operator, "operator")
-    update_df_and_model(df, Region, "region")
-
+    df = df[df["begin"].str.fullmatch(r"\d+")]
+    df = df[df["end"].str.fullmatch(r"\d+")]
+    df = df[df["code"].str.fullmatch(r"\d+")]
+    df["begin"] = df["code"] + df["begin"]
+    df["end"] = df["code"] + df["end"]
+    df = df[(df["operator"] != "") & (df["region"] != "")]
+    m = df["region"].str.startswith("Московская область", na=False)
+    df.loc[m, "region"] = "г. Москва и Московская область"
     df["begin"] = df["begin"].astype("int64")
     df["end"] = df["end"].astype("int64")
 
-    Phone.objects.all().delete()
-    Phone.objects.bulk_create(
-        [
-            Phone(
-                begin=row["begin"],
-                end=row["end"],
-                operator_id=row["operator"],
-                region_id=row["region"],
-            )
-            for _, row in df.iterrows()
-        ],
-        batch_size=5000,
-    )
+    return df[["begin", "end", "operator", "region"]]
 
-    logger.info("Rossvyaz data successfully updated")
+
+def _norm_text(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = s.replace("\u00a0", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def update_df_and_model(df: pd.DataFrame, Model, column: str) -> None:
+    raw_col = f"__{column}_raw"
+    df[raw_col] = df[column].apply(_norm_text)
+
+    df = df[df[raw_col] != ""]
+    df[column] = df[raw_col]
+
+    existing = set(Model.objects.values_list("name", flat=True))
+    to_create = [Model(name=name) for name in df[column].unique() if name not in existing]
+    if to_create:
+        Model.objects.bulk_create(to_create, ignore_conflicts=True)
+
+    name_to_id = dict(Model.objects.values_list("name", "id"))
+    df[column] = df[column].map(name_to_id)
+
+    if df[column].isna().any():
+        bad_names = df.loc[df[column].isna(), raw_col].unique().tolist()
+
+        for name in bad_names:
+            Model.objects.get_or_create(name=name)
+
+        name_to_id = dict(Model.objects.values_list("name", "id"))
+        df[column] = df[raw_col].map(name_to_id)
+
+    bad = df[df[column].isna()]
+    if not bad.empty:
+        sample = bad[["begin", "end", "operator", raw_col]].head(10)
+        raise ValueError(f"Не удалось замапить {column} в id. Пример строк:\n{sample}")
+
+    return df.drop(columns=[raw_col])
+
+
+def bulk_insert_phones(df, batch_size=50000):
+    objs = []
+    for row in df.itertuples(index=False):
+        objs.append(
+            Phone(
+                begin=int(row.begin),
+                end=int(row.end),
+                operator_id=int(row.operator),
+                region_id=int(row.region),
+            )
+        )
+        if len(objs) >= batch_size:
+            Phone.objects.bulk_create(objs, batch_size=batch_size)
+            objs.clear()
+
+    if objs:
+        Phone.objects.bulk_create(objs, batch_size=batch_size)
+
+
+def update_info() -> None:
+    logger.info("Starting Rossvyaz update...")
+    Phone.objects.all().delete()
+    for url in CSV_URLS:
+        logger.info("Downloading: %s", url)
+        content = fetch_csv(url)
+        df = prepare_df(StringIO(content.decode("utf-8", errors="ignore")))
+        df = update_df_and_model(df, Operator, "operator")
+        df = update_df_and_model(df, Region, "region")
+        df = df.dropna(subset=["operator", "region"])
+        df["operator"] = df["operator"].astype("int64")
+        df["region"] = df["region"].astype("int64")
+        bulk_insert_phones(df[["begin", "end", "operator", "region"]])
+
+    logger.info("Rossvyaz update finished.")
+
 
 
 def parse_num(num: str) -> phonenumbers.PhoneNumber:

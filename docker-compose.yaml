@@ -1,11 +1,10 @@
-version: "3.9"
-
 services:
   app:
     <<: &app
       build:
         context: .
         dockerfile: Dockerfile
+      container_name: atraks_app
       env_file:
         - .env
       depends_on:
@@ -13,21 +12,38 @@ services:
           condition: service_healthy
         redis:
           condition: service_healthy
+    ports:
+      - "8000:8000"
+    profiles:
+      - all
+      - app
 
   redis:
     image: redis:7.2
+    container_name: atraks_redis
     ports:
-      - "127.0.0.1:6379:6379"
+      - "6379:6379"
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - REDIS_DB=${REDIS_DB}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD} --port 6379 --save 20 1 --loglevel warning
     healthcheck:
       test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
 
+    profiles:
+      - all
+      - app
+
   db:
     image: postgres:16
+    container_name: atraks_db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: hackadvisor
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -37,12 +53,25 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    profiles:
+      - all
+      - app
 
   celery-worker:
     <<: *app
-    command: "celery -A worker"
+    container_name: atraks_celery_worker
+    environment:
+      RUN_MIGRATIONS: "0"
+    command: ["celery", "-A", "kernel", "worker", "-l", "info"]
+    profiles:
+      - all
 
-  celery-bet:
+  celery-beat:
     <<: *app
-    command: "celery -A beat"
+    container_name: atraks_celery_beat
+    environment:
+      RUN_MIGRATIONS: "0"
+    command: ["celery", "-A", "kernel", "beat", "-l", "info"]
 
+    profiles:
+      - all

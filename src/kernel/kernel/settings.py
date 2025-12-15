@@ -31,7 +31,7 @@ SECRET_KEY = os_getenv("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
 
 # Application definition
@@ -89,14 +89,21 @@ WSGI_APPLICATION = 'kernel.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": os_getenv("POSTGRES_DB"),
+#         "USER": os_getenv("POSTGRES_USER"),
+#         "PASSWORD": os_getenv("POSTGRES_PASSWORD"),
+#         "HOST": os_getenv("POSTGRES_HOST"),
+#         "PORT": os_getenv("POSTGRES_PORT"),
+#     }
+# }
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os_getenv("DB_NAME"),
-        "USER": os_getenv("DB_USER"),
-        "PASSWORD": os_getenv("DB_PASSWORD"),
-        "HOST": os_getenv("DB_HOST"),
-        "PORT": os_getenv("DB_PORT"),
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -149,3 +156,6 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
+
+CELERY_BROKER_URL = f"redis://:{os_getenv('REDIS_PASSWORD')}@{os_getenv('REDIS_HOST')}:6379/0"
+CELERY_TIMEZONE = "Europe/Moscow"
