@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  app:
+    <<: &app
+      build:
+        context: .
+        dockerfile: Dockerfile
+      env_file:
+        - .env
+      depends_on:
+        db:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+
+  redis:
+    image: redis:7.2
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: hackadvisor
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./db:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -q -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  celery-worker:
+    <<: *app
+    command: "celery -A worker"
+
+  celery-bet:
+    <<: *app
+    command: "celery -A beat"
+
